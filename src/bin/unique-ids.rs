@@ -1,6 +1,6 @@
 use std::io::{StdoutLock, Write};
 
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, bail};
 use maelstrom_node::{Body, Message, Node, main_loop};
 use serde::{Serialize, Deserialize};
 
@@ -38,19 +38,38 @@ impl Node<Payload> for UniqueIdNode {
     fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
         match msg.body.payload {
             Payload::Init { node_id, .. } => {
-                self.id = Some(node_id.clone());
-                let body = Body {
-                    id: Some(self.msg_id),
-                    reply_to: msg.body.id,
-                    payload: Payload::InitOk {},
-                };
-                self.msg_id += 1;
-                serde_json::to_writer(&mut *output, &Message {
-                    src: node_id.clone(),
-                    dest: msg.src,
-                    body,
-                })?;
-                output.write_all(b"\n").context("write trailing newline")?;
+                if self.id.is_some() {
+                    let body = Body {
+                        id: Some(self.msg_id),
+                        reply_to: msg.body.id,
+                        payload: Payload::Error {
+                            code: 14,
+                            text: Some(String::from("Recieved Init twice")),
+                        },
+                    };
+                    self.msg_id += 1;
+                    serde_json::to_writer(&mut *output, &Message {
+                        src: String::from("uninitialized"),
+                        dest: msg.src,
+                        body,
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
+                    bail!("received init twice")
+                } else {
+                    self.id = Some(node_id.clone());
+                    let body = Body {
+                        id: Some(self.msg_id),
+                        reply_to: msg.body.id,
+                        payload: Payload::InitOk {},
+                    };
+                    self.msg_id += 1;
+                    serde_json::to_writer(&mut *output, &Message {
+                        src: node_id.clone(),
+                        dest: msg.src,
+                        body,
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
+                }
             }
             Payload::Generate {  } => {
                 if let Some(id) = &self.id {
