@@ -100,6 +100,7 @@ where
 
     for line in stdin {
         let input = line.context("get stdin")?;
+        dbg!(&input);
         let input = serde_json::from_str(&input).context("serialize input")?;
         state.process_message(input, &mut stdout)?;
     }
