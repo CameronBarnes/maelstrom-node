@@ -1,121 +1,128 @@
-use std::io::Write;
+use std::io::{StdoutLock, Write};
 
-use anyhow::{Context, Result};
-use maelstrom_node::{Body, Message, Payload::*};
+use anyhow::{Result, Context};
+use maelstrom_node::{Body, Message, Node, main_loop};
+use serde::{Serialize, Deserialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum Payload {
+    Init{
+        node_id: String,
+        node_ids: Vec<String>,
+    },
+    InitOk{},
+    Echo{
+        echo: String,
+    },
+    EchoOk{
+        echo: String,
+    },
+    Error {
+        code: usize,
+        text: Option<String>,
+    }
+}
+
+#[derive(Default)]
 struct EchoNode {
     id: Option<String>,
     msg_id: usize,
 }
 
-impl EchoNode {
-    pub fn process_message(&mut self, msg: Message) -> Result<Vec<Message>> {
-        let mut output = Vec::new();
-
+impl Node<Payload> for EchoNode {
+    fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
         match msg.body.payload {
-            Init { node_id, .. } => {
+            Payload::Init { node_id, .. } => {
                 self.id = Some(node_id.clone());
                 let body = Body {
                     id: Some(self.msg_id),
                     reply_to: msg.body.id,
-                    payload: InitOk {},
+                    payload: Payload::InitOk {},
                 };
                 self.msg_id += 1;
-                output.push(Message {
+                serde_json::to_writer(&mut *output, &Message {
                     src: node_id.clone(),
                     dest: msg.src,
                     body,
-                });
+                })?;
+                output.write_all(b"\n").context("write trailing newline")?;
             }
-            Echo { echo } => {
+            Payload::Echo { echo } => {
                 if let Some(id) = &self.id {
                     let body = Body {
                         id: Some(self.msg_id),
                         reply_to: msg.body.id,
-                        payload: EchoOk { echo },
+                        payload: Payload::EchoOk { echo },
                     };
                     self.msg_id += 1;
-                    output.push(Message {
+                    serde_json::to_writer(&mut *output, &Message {
                         src: id.clone(),
                         dest: msg.src,
                         body,
-                    });
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
                 } else {
                     let body = Body {
                         id: Some(self.msg_id),
                         reply_to: msg.body.id,
-                        payload: Error {
+                        payload: Payload::Error {
                             code: 11,
                             text: Some(String::from("Have not yet receieved Init")),
                         },
                     };
                     self.msg_id += 1;
-                    output.push(Message {
+                    serde_json::to_writer(&mut *output, &Message {
                         src: String::from("uninitialized"),
                         dest: msg.src,
                         body,
-                    });
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
                 }
             }
-            EchoOk { .. } => {}
+            Payload::EchoOk { .. } => {}
             _ => {
                 if let Some(id) = &self.id {
                     let body = Body {
                         id: Some(self.msg_id),
                         reply_to: msg.body.id,
-                        payload: Error {
+                        payload: Payload::Error {
                             code: 10,
                             text: Some(String::from("unimplemented or not supported")),
                         },
                     };
                     self.msg_id += 1;
-                    output.push(Message {
+                    serde_json::to_writer(&mut *output, &Message {
                         src: id.clone(),
                         dest: msg.src,
                         body,
-                    });
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
                 } else {
                     let body = Body {
                         id: Some(self.msg_id),
                         reply_to: msg.body.id,
-                        payload: Error {
+                        payload: Payload::Error {
                             code: 11,
                             text: Some(String::from("Have not yet receieved Init")),
                         },
                     };
                     self.msg_id += 1;
-                    output.push(Message {
+                    serde_json::to_writer(&mut *output, &Message {
                         src: String::from("uninitialized"),
                         dest: msg.src,
                         body,
-                    });
+                    })?;
+                    output.write_all(b"\n").context("write trailing newline")?;
                 }
             }
         }
 
-        Ok(output)
+        Ok(())
     }
 }
 
 pub fn main() -> Result<()> {
-    let stdin = std::io::stdin().lock();
-    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
-
-    let mut stdout = std::io::stdout().lock();
-
-    let mut state = EchoNode {
-        id: None,
-        msg_id: 0,
-    };
-
-    for input in inputs {
-        let input = input.context("serialize maelstrom input")?;
-        let out = state.process_message(input)?;
-        for msg in out {
-            serde_json::to_writer(&mut stdout, &msg).context("serialize response")?;
-            stdout.write_all(b"\n").context("write trailing newline")?;
-        }
-    }
-
-    Ok(())
+    main_loop(EchoNode::default())
 }
