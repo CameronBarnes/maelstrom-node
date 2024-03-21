@@ -41,6 +41,9 @@ impl BroadcastNode {
         output: &mut StdoutLock,
     ) -> Result<()> {
         for id in self.neighbours.clone() {
+            if id.eq(&msg.src) {
+                continue;
+            }
             let msg = msg.clone();
             let mut msg = self.reply(msg, payload.clone());
             msg.dest = id.clone();
