@@ -60,8 +60,8 @@ impl Node<Payload> for BroadcastNode {
     where
         Self: Sized,
     {
-        let neighbours = init.node_ids;
-        //neighbours.retain_mut(|id| (*id).ne(&init.node_id));
+        let mut neighbours = init.node_ids;
+        neighbours.retain_mut(|id| (*id).ne(&init.node_id));
         Ok(Self {
             id: init.node_id,
             neighbours,
