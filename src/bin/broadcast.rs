@@ -84,9 +84,9 @@ impl Node<Payload> for BroadcastNode {
     fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
         match msg.body.payload.clone() {
             Payload::Broadcast { message, callback } => {
-                if !callback.is_some_and(|callback_id| self.callbacks.contains(&callback_id)) {
+                if !callback.clone().is_some_and(|callback_id| self.callbacks.contains(&callback_id)) {
+                    let callback = callback.unwrap_or(generate_unique_id());
                     self.messages.push(message);
-                    let callback = generate_unique_id();
                     self.callbacks.push(callback.clone());
                     self.broadcast(
                         msg.clone(),
