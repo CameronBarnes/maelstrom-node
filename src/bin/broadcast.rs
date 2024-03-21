@@ -9,11 +9,18 @@ use serde_json::Value;
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum Payload {
-    Broadcast { message: Value },
+    Broadcast {
+        message: Value,
+        callback: Option<String>,
+    },
     BroadcastOk {},
     Read {},
-    ReadOk { messages: Vec<Value> },
-    Topology { topology: Value },
+    ReadOk {
+        messages: Vec<Value>,
+    },
+    Topology {
+        topology: Value,
+    },
     TopologyOk {},
 }
 
@@ -23,35 +30,29 @@ struct BroadcastNode {
     neighbours: Vec<String>,
     msg_id: usize,
     messages: Vec<Value>,
-    callbacks: Vec<usize>,
+    callbacks: Vec<String>,
 }
 
 impl BroadcastNode {
-    fn broadcast(&mut self, msg: Message<Payload>, payload: Payload, output: &mut StdoutLock) -> Result<Vec<usize>> {
-
-        let mut msg_ids_out = Vec::new();
-
+    fn broadcast(
+        &mut self,
+        msg: Message<Payload>,
+        payload: Payload,
+        output: &mut StdoutLock,
+    ) -> Result<()> {
         for id in self.neighbours.clone() {
             let msg = msg.clone();
             let mut msg = self.reply(msg, payload.clone());
             msg.dest = id.clone();
-            msg_ids_out.push(msg.body.id.expect("Should always be present"));
             msg.send(output)?;
         }
 
-        Ok(msg_ids_out)
-
+        Ok(())
     }
 }
 
-fn remove_if_present(item: usize, vec: &mut Vec<usize>) -> bool {
-    for i in 0..vec.len() {
-        if vec[i] == item {
-            vec.swap_remove(i);
-            return true;
-        }
-    }
-    false
+fn generate_unique_id() -> String {
+    ulid::Ulid::new().to_string()
 }
 
 impl Node<Payload> for BroadcastNode {
@@ -82,21 +83,34 @@ impl Node<Payload> for BroadcastNode {
 
     fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
         match msg.body.payload.clone() {
-            Payload::Broadcast { message } => {
-                dbg!(&message);
-                if !msg.body.id.is_some_and(|id| remove_if_present(id, &mut self.callbacks)) {
+            Payload::Broadcast { message, callback } => {
+                if !callback.is_some_and(|callback_id| self.callbacks.contains(&callback_id)) {
                     self.messages.push(message.clone());
-                    let mut send_ids = self.broadcast(msg.clone(), Payload::Broadcast{message}, &mut *output)?;
-                    self.callbacks.append(&mut send_ids);
+                    let callback = generate_unique_id();
+                    self.callbacks.push(callback.clone());
+                    self.broadcast(
+                        msg.clone(),
+                        Payload::Broadcast {
+                            message,
+                            callback: Some(callback),
+                        },
+                        &mut *output,
+                    )?;
                 }
                 self.reply(msg, Payload::BroadcastOk {}).send(output)?;
             }
             Payload::Read {} => {
-                self.reply(msg, Payload::ReadOk{ messages: self.messages.clone() }).send(output)?;
-            },
+                self.reply(
+                    msg,
+                    Payload::ReadOk {
+                        messages: self.messages.clone(),
+                    },
+                )
+                .send(output)?;
+            }
             Payload::Topology { .. } => {
-                self.reply(msg, Payload::TopologyOk{}).send(output)?;
-            },
+                self.reply(msg, Payload::TopologyOk {}).send(output)?;
+            }
             _ => {}
         }
 
