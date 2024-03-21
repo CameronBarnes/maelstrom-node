@@ -1,9 +1,29 @@
-use std::io::StdoutLock;
+use std::{io::StdoutLock, collections::HashMap};
 
 use anyhow::Result;
 use maelstrom_node::{main_loop, Message, Node};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Callback {
+    pub nodes: Vec<String>,
+    uid: String,
+}
+
+impl Callback {
+    pub fn id(&self) -> &String {
+        &self.uid
+    }
+}
+
+impl Default for Callback {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            uid: generate_unique_id(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -11,7 +31,8 @@ use serde_json::Value;
 pub enum Payload {
     Broadcast {
         message: usize,
-        callback: Option<String>,
+        #[serde(default)]
+        callback: Callback,
     },
     BroadcastOk {},
     Read {},
@@ -19,7 +40,7 @@ pub enum Payload {
         messages: Vec<usize>,
     },
     Topology {
-        topology: Value,
+        topology: HashMap<String, Vec<String>>,
     },
     TopologyOk {},
 }
@@ -30,22 +51,25 @@ struct BroadcastNode {
     neighbours: Vec<String>,
     msg_id: usize,
     messages: Vec<usize>,
-    callbacks: Vec<String>,
+    seen_uids: Vec<String>,
+    callbacks: Vec<(usize, String, usize, String)>,
 }
 
 impl BroadcastNode {
     fn broadcast(
         &mut self,
         msg: Message<Payload>,
-        payload: Payload,
+        message: usize,
+        callback: Callback,
         output: &mut StdoutLock,
     ) -> Result<()> {
         for id in self.neighbours.clone() {
-            if id.eq(&msg.src) {
+            if callback.nodes.contains(&id) {
                 continue;
             }
             let msg = msg.clone();
-            let mut msg = self.reply(msg, payload.clone());
+            let mut msg = self.reply(msg, Payload::Broadcast{message, callback: callback.clone()});
+            self.callbacks.push((message, id.clone(), msg.body.id.unwrap(), callback.id().clone()));
             msg.dest = id.clone();
             msg.send(output)?;
         }
@@ -70,6 +94,7 @@ impl Node<Payload> for BroadcastNode {
             neighbours,
             msg_id: 1,
             messages: Vec::new(),
+            seen_uids: Vec::new(),
             callbacks: Vec::new(),
         })
     }
@@ -86,20 +111,19 @@ impl Node<Payload> for BroadcastNode {
 
     fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
         match msg.body.payload.clone() {
-            Payload::Broadcast { message, callback } => {
-                if !callback.clone().is_some_and(|callback_id| self.callbacks.contains(&callback_id)) {
-                    let callback = callback.unwrap_or(generate_unique_id());
+            Payload::Broadcast { message, mut callback } => {
+                if !self.seen_uids.contains(callback.id()) {
+                    callback.nodes.push(self.id.clone());
                     self.messages.push(message);
-                    self.callbacks.push(callback.clone());
+                    self.seen_uids.push(callback.id().clone());
                     self.broadcast(
                         msg.clone(),
-                        Payload::Broadcast {
-                            message,
-                            callback: Some(callback),
-                        },
+                        message,
+                        callback.clone(),
                         &mut *output,
                     )?;
                 }
+                callback.nodes = vec![self.id.clone()];
                 self.reply(msg, Payload::BroadcastOk {}).send(output)?;
             }
             Payload::Read {} => {
@@ -111,10 +135,18 @@ impl Node<Payload> for BroadcastNode {
                 )
                 .send(output)?;
             }
-            Payload::Topology { .. } => {
+            Payload::Topology { topology } => {
+                if let Some(neighbours) = topology.get(&self.id) {
+                    self.neighbours = neighbours.to_owned();
+                }
                 self.reply(msg, Payload::TopologyOk {}).send(output)?;
             }
-            _ => {}
+            Payload::BroadcastOk { } => {
+                self.callbacks.retain(|(_msg, node, msg_id, _uid)| {
+                    msg.src.ne(node) && !msg.body.reply_to.is_some_and(|reply_id| reply_id == *msg_id)
+                })
+            }
+            Payload::TopologyOk { .. } | Payload::ReadOk { .. } => {}
         }
 
         Ok(())
