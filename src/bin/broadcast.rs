@@ -10,13 +10,13 @@ use serde_json::Value;
 #[serde(rename_all = "snake_case")]
 pub enum Payload {
     Broadcast {
-        message: Value,
+        message: usize,
         callback: Option<String>,
     },
     BroadcastOk {},
     Read {},
     ReadOk {
-        messages: Vec<Value>,
+        messages: Vec<usize>,
     },
     Topology {
         topology: Value,
@@ -29,7 +29,7 @@ struct BroadcastNode {
     id: String,
     neighbours: Vec<String>,
     msg_id: usize,
-    messages: Vec<Value>,
+    messages: Vec<usize>,
     callbacks: Vec<String>,
 }
 
@@ -62,7 +62,7 @@ impl Node<Payload> for BroadcastNode {
     {
         let neighbours = init.node_ids;
         //neighbours.retain_mut(|id| (*id).ne(&init.node_id));
-        Ok(BroadcastNode {
+        Ok(Self {
             id: init.node_id,
             neighbours,
             msg_id: 1,
@@ -85,7 +85,7 @@ impl Node<Payload> for BroadcastNode {
         match msg.body.payload.clone() {
             Payload::Broadcast { message, callback } => {
                 if !callback.is_some_and(|callback_id| self.callbacks.contains(&callback_id)) {
-                    self.messages.push(message.clone());
+                    self.messages.push(message);
                     let callback = generate_unique_id();
                     self.callbacks.push(callback.clone());
                     self.broadcast(
