@@ -1,4 +1,4 @@
-use std::io::{BufRead, StdoutLock, Write};
+use std::{io::{BufRead, StdoutLock, Write}, sync::mpsc::{self, Sender}, thread};
 
 use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -19,6 +19,14 @@ impl<Payload> Message<Payload> {
         output.write_all(b"\n").context("write trailing newline")?;
         Ok(())
     }
+
+    pub fn new(src: String, dest: String, body: Body<Payload>) -> Self {
+        Message {
+            src,
+            dest,
+            body
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +37,16 @@ pub struct Body<Payload> {
     pub reply_to: Option<usize>,
     #[serde(flatten)]
     pub payload: Payload,
+}
+
+impl<Payload> Body<Payload> {
+    pub fn new(id: Option<usize>, payload: Payload) -> Self {
+        Body {
+            id,
+            reply_to: None,
+            payload
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,13 +63,20 @@ pub struct Init {
     pub node_ids: Vec<String>,
 }
 
-pub trait Node<Payload> {
-    fn from_init(init: Init) -> Result<Self>
+#[derive(Debug, Clone)]
+pub enum Event<Payload, InjectedPayload = ()> {
+    Message(Message<Payload>),
+    Injected(InjectedPayload),
+    EOF,
+}
+
+pub trait Node<Payload, InjectedPayload = ()> {
+    fn from_init(init: Init, tx: Sender<Event<Payload, InjectedPayload>>) -> Result<Self>
     where
         Self: Sized;
     fn next_msg_id(&mut self) -> usize;
     fn node_id(&self) -> String;
-    fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()>;
+    fn process_message(&mut self, event: Event<Payload, InjectedPayload>, output: &mut StdoutLock) -> Result<()>;
     fn reply(&mut self, msg: Message<Payload>, payload: Payload) -> Message<Payload> {
         let mut body = msg.body;
         body.reply_to = body.id;
@@ -65,11 +90,14 @@ pub trait Node<Payload> {
     }
 }
 
-pub fn main_loop<State, Payload>() -> Result<()>
+pub fn main_loop<State, Payload, InjectedPayload>() -> Result<()>
 where
-    State: Node<Payload>,
-    Payload: DeserializeOwned,
+    State: Node<Payload, InjectedPayload>,
+    Payload: DeserializeOwned + Send + 'static,
+    InjectedPayload: Send + 'static,
 {
+    let (tx, rx) = mpsc::channel();
+
     let stdin = std::io::stdin().lock();
     let mut stdin = stdin.lines();
     let mut stdout = std::io::stdout().lock();
@@ -96,13 +124,27 @@ where
     }
     .send(&mut stdout)?;
 
-    let mut state: State = Node::from_init(init).context("node init failed")?;
+    let mut state: State = Node::from_init(init, tx.clone()).context("node init failed")?;
 
-    for line in stdin {
-        let input = line.context("get stdin")?;
-        let input = serde_json::from_str(&input).context("serialize input")?;
-        state.process_message(input, &mut stdout)?;
+    drop(stdin);
+    let join_handler = thread::spawn(move|| {
+        let stdin = std::io::stdin().lock();
+        for line in stdin.lines() {
+            let input = line.context("get stdin")?;
+            let input = serde_json::from_str(&input).context("serialize input")?;
+            if tx.send(Event::Message(input)).is_err() {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+        let _ = tx.send(Event::EOF);
+        Ok(())
+    });
+
+    for input in rx {
+        state.process_message(input, &mut stdout).context("process message failed")?;
     }
+
+    join_handler.join().expect("stdin thread panicked")?;
 
     Ok(())
 }

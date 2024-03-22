@@ -1,7 +1,7 @@
-use std::io::StdoutLock;
+use std::{io::StdoutLock, sync::mpsc::Sender};
 
 use anyhow::Result;
-use maelstrom_node::{main_loop, Message, Node};
+use maelstrom_node::{main_loop, Node, Event};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,8 +25,8 @@ struct UniqueIdNode {
     msg_id: usize,
 }
 
-impl Node<Payload> for UniqueIdNode {
-    fn from_init(init: maelstrom_node::Init) -> Result<Self>
+impl Node<Payload, ()> for UniqueIdNode {
+    fn from_init(init: maelstrom_node::Init, _tx: Sender<Event<Payload, ()>>) -> Result<Self>
     where
         Self: Sized,
     {
@@ -46,7 +46,11 @@ impl Node<Payload> for UniqueIdNode {
         self.id.clone()
     }
 
-    fn process_message(&mut self, msg: Message<Payload>, output: &mut StdoutLock) -> Result<()> {
+    fn process_message(&mut self, event: Event<Payload, ()>, output: &mut StdoutLock) -> Result<()> {
+        let Event::Message(msg) = event else {
+            panic!("Injected event where there's not supposed to be");
+        };
+
         match msg.body.payload {
             Payload::Generate {} => {
                 self.reply(
@@ -65,5 +69,5 @@ impl Node<Payload> for UniqueIdNode {
 }
 
 pub fn main() -> Result<()> {
-    main_loop::<UniqueIdNode, Payload>()
+    main_loop::<UniqueIdNode, Payload, ()>()
 }
